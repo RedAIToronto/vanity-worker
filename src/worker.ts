@@ -16,6 +16,25 @@ function matches(pub: string, pattern: string): boolean {
   return pub.endsWith(pattern);
 }
 
+async function ensureSchema() {
+  // Create table and indexes if they don't exist (avoids relying on prisma db push in container)
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "VanityMintPool" (
+      "id" text PRIMARY KEY,
+      "publicKey" text UNIQUE NOT NULL,
+      "encSecret" bytea NOT NULL,
+      "pattern" text NOT NULL,
+      "caseSensitive" boolean NOT NULL DEFAULT true,
+      "status" text NOT NULL DEFAULT 'ready',
+      "reservedUntil" timestamptz,
+      "createdAt" timestamptz NOT NULL DEFAULT NOW(),
+      "usedAt" timestamptz
+    );
+    CREATE INDEX IF NOT EXISTS "VanityMintPool_status_idx" ON "VanityMintPool" ("status");
+    CREATE INDEX IF NOT EXISTS "VanityMintPool_pattern_caseSensitive_idx" ON "VanityMintPool" ("pattern","caseSensitive");
+  `);
+}
+
 async function ensureBuffer(pattern: string) {
   const ready = await prisma.vanityMintPool.count({ where: { pattern, caseSensitive: true, status: 'ready' } });
   if (ready >= MIN_BUFFER) return;
@@ -54,6 +73,7 @@ async function ensureBuffer(pattern: string) {
 
 async function main() {
   console.log(`[vanity] worker starting. patterns=${TARGETS.join(',')} buffer=${MIN_BUFFER}`);
+  await ensureSchema();
   while (true) {
     for (const p of TARGETS) {
       try { await ensureBuffer(p); } catch (e) { console.error('[vanity] ensureBuffer error', e); }
