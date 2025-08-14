@@ -18,22 +18,36 @@ function matches(pub: string, pattern: string): boolean {
 }
 
 async function ensureSchema() {
-  // Create table and indexes if they don't exist (Postgres: execute one statement per call)
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS "VanityMintPool" (
-      "id" text PRIMARY KEY,
-      "publicKey" text UNIQUE NOT NULL,
-      "encSecret" bytea NOT NULL,
-      "pattern" text NOT NULL,
-      "caseSensitive" boolean NOT NULL DEFAULT true,
-      "status" text NOT NULL DEFAULT 'ready',
-      "reservedUntil" timestamptz,
-      "createdAt" timestamptz NOT NULL DEFAULT NOW(),
-      "usedAt" timestamptz
-    )
-  `);
-  await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "VanityMintPool_status_idx" ON "VanityMintPool" ("status")`);
-  await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "VanityMintPool_pattern_caseSensitive_idx" ON "VanityMintPool" ("pattern","caseSensitive")`);
+  try {
+    // Create table if it doesn't exist
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "VanityMintPool" (
+        "id" text PRIMARY KEY,
+        "publicKey" text UNIQUE NOT NULL,
+        "encSecret" bytea NOT NULL,
+        "pattern" text NOT NULL,
+        "caseSensitive" boolean NOT NULL DEFAULT true,
+        "status" text NOT NULL DEFAULT 'ready',
+        "reservedUntil" timestamptz,
+        "createdAt" timestamptz NOT NULL DEFAULT NOW(),
+        "usedAt" timestamptz
+      )
+    `);
+  } catch (e: any) {
+    console.log('[vanity] Table exists or creation error:', e.message);
+  }
+
+  try {
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "VanityMintPool_status_idx" ON "VanityMintPool" ("status")`);
+  } catch (e: any) {
+    console.log('[vanity] Index exists or creation error:', e.message);
+  }
+
+  try {
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "VanityMintPool_pattern_caseSensitive_idx" ON "VanityMintPool" ("pattern","caseSensitive")`);
+  } catch (e: any) {
+    console.log('[vanity] Index exists or creation error:', e.message);
+  }
 }
 
 async function ensureBuffer(pattern: string) {
@@ -74,19 +88,29 @@ async function ensureBuffer(pattern: string) {
 }
 
 async function main() {
+  // Start HTTP server first for health checks
   const port = Number(process.env.PORT) || 10000;
   http
     .createServer((_, res) => {
       res.writeHead(200, { 'content-type': 'text/plain' });
-      res.end('ok');
+      res.end('vanity-worker healthy');
     })
     .listen(port, () => console.log(`[vanity] http listening on ${port}`));
 
   console.log(`[vanity] worker starting. patterns=${TARGETS.join(',')} buffer=${MIN_BUFFER}`);
+  
+  // Wait a bit for port to be detected
+  await new Promise(r => setTimeout(r, 1000));
+  
   await ensureSchema();
+  
   while (true) {
     for (const p of TARGETS) {
-      try { await ensureBuffer(p); } catch (e) { console.error('[vanity] ensureBuffer error', e); }
+      try { 
+        await ensureBuffer(p); 
+      } catch (e) { 
+        console.error('[vanity] ensureBuffer error', e); 
+      }
     }
     await new Promise(r => setTimeout(r, 2000));
   }
