@@ -1,8 +1,9 @@
 import 'dotenv/config';
 import { prisma } from './db.js';
 import { Keypair } from '@solana/web3.js';
-import bs58 from 'bs58';
 import { encryptSecret } from './crypto.js';
+import { randomUUID } from 'node:crypto';
+import http from 'node:http';
 
 const TARGETS = (process.env.VANITY_PATTERNS || 'SNOW,SB')
   .split(',')
@@ -17,7 +18,7 @@ function matches(pub: string, pattern: string): boolean {
 }
 
 async function ensureSchema() {
-  // Create table and indexes if they don't exist (avoids relying on prisma db push in container)
+  // Create table and indexes if they don't exist (Postgres: execute one statement per call)
   await prisma.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS "VanityMintPool" (
       "id" text PRIMARY KEY,
@@ -29,10 +30,10 @@ async function ensureSchema() {
       "reservedUntil" timestamptz,
       "createdAt" timestamptz NOT NULL DEFAULT NOW(),
       "usedAt" timestamptz
-    );
-    CREATE INDEX IF NOT EXISTS "VanityMintPool_status_idx" ON "VanityMintPool" ("status");
-    CREATE INDEX IF NOT EXISTS "VanityMintPool_pattern_caseSensitive_idx" ON "VanityMintPool" ("pattern","caseSensitive");
+    )
   `);
+  await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "VanityMintPool_status_idx" ON "VanityMintPool" ("status")`);
+  await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "VanityMintPool_pattern_caseSensitive_idx" ON "VanityMintPool" ("pattern","caseSensitive")`);
 }
 
 async function ensureBuffer(pattern: string) {
@@ -52,6 +53,7 @@ async function ensureBuffer(pattern: string) {
       try {
         await prisma.vanityMintPool.create({
           data: {
+            id: randomUUID(),
             publicKey: pub,
             encSecret: enc,
             pattern,
@@ -72,6 +74,14 @@ async function ensureBuffer(pattern: string) {
 }
 
 async function main() {
+  const port = Number(process.env.PORT) || 10000;
+  http
+    .createServer((_, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('ok');
+    })
+    .listen(port, () => console.log(`[vanity] http listening on ${port}`));
+
   console.log(`[vanity] worker starting. patterns=${TARGETS.join(',')} buffer=${MIN_BUFFER}`);
   await ensureSchema();
   while (true) {
