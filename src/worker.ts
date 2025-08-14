@@ -52,17 +52,30 @@ async function ensureSchema() {
 
 async function ensureBuffer(pattern: string) {
   const ready = await prisma.vanityMintPool.count({ where: { pattern, caseSensitive: true, status: 'ready' } });
-  if (ready >= MIN_BUFFER) return;
+  if (ready >= MIN_BUFFER) {
+    console.log(`[vanity] pattern=${pattern} buffer full (${ready}/${MIN_BUFFER})`);
+    return;
+  }
 
   const toGenerate = Math.max(0, MIN_BUFFER - ready);
-  console.log(`[vanity] pattern=${pattern} need=${toGenerate}`);
+  console.log(`[vanity] pattern=${pattern} current=${ready} need=${toGenerate} searching...`);
 
   let found = 0;
+  let attempts = 0;
   const started = Date.now();
+  
   while (found < toGenerate) {
+    attempts++;
     const kp = Keypair.generate();
     const pub = kp.publicKey.toBase58();
+    
+    // Log progress every 10000 attempts
+    if (attempts % 10000 === 0) {
+      console.log(`[vanity] pattern=${pattern} attempts=${attempts} found=${found}/${toGenerate}`);
+    }
+    
     if (matches(pub, pattern)) {
+      console.log(`[vanity] FOUND match! ${pub} ends with ${pattern}`);
       const enc = encryptSecret(kp.secretKey);
       try {
         await prisma.vanityMintPool.create({
@@ -76,26 +89,32 @@ async function ensureBuffer(pattern: string) {
           }
         });
         found += 1;
-        if (found % 1 === 0) {
-          const rate = (found * 1000) / Math.max(1, Date.now() - started);
-          console.log(`[vanity] stored ${found}/${toGenerate} for ${pattern} rate=${rate.toFixed(2)}/s`);
-        }
+        const rate = (found * 1000) / Math.max(1, Date.now() - started);
+        console.log(`[vanity] stored ${found}/${toGenerate} for ${pattern} rate=${rate.toFixed(2)}/s`);
       } catch (e: any) {
-        if (e?.code !== 'P2002') throw e; // unique violation -> skip
+        if (e?.code !== 'P2002') {
+          console.error(`[vanity] Error storing: ${e.message}`);
+          throw e;
+        }
+        console.log(`[vanity] Duplicate key, skipping`);
       }
     }
   }
+  
+  const elapsed = (Date.now() - started) / 1000;
+  console.log(`[vanity] Completed ${pattern}: generated ${found} in ${elapsed.toFixed(1)}s (${attempts} attempts)`);
 }
 
 async function main() {
   // Start HTTP server first for health checks
   const port = Number(process.env.PORT) || 10000;
+  const host = '0.0.0.0'; // Bind to all interfaces for Render
   http
     .createServer((_, res) => {
       res.writeHead(200, { 'content-type': 'text/plain' });
       res.end('vanity-worker healthy');
     })
-    .listen(port, () => console.log(`[vanity] http listening on ${port}`));
+    .listen(port, host, () => console.log(`[vanity] http listening on ${host}:${port}`));
 
   console.log(`[vanity] worker starting. patterns=${TARGETS.join(',')} buffer=${MIN_BUFFER}`);
   
